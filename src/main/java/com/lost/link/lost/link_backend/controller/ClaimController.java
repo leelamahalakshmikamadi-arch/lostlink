@@ -163,9 +163,14 @@ public class ClaimController {
     }
 
     @GetMapping("/notifications")
-    public ResponseEntity<List<Notification>> getNotifications() {
-        List<Notification> list = notificationRepository.findAllByOrderByCreatedAtDesc();
-        if (list.isEmpty()) {
+    public ResponseEntity<List<Notification>> getNotifications(@org.springframework.web.bind.annotation.RequestParam(required = false) String userId) {
+        List<Notification> list;
+        if (userId != null && !userId.isBlank()) {
+            list = notificationRepository.findByUserIdOrGlobalOrderByCreatedAtDesc(userId.trim());
+        } else {
+            list = notificationRepository.findGlobalByOrderByCreatedAtDesc();
+        }
+        if (list.isEmpty() && notificationRepository.count() == 0) {
             // Seed welcome and campus alerts so the drawer is never completely blank
             Notification welcome = new Notification(
                     "Welcome to LostLink",
@@ -181,14 +186,35 @@ public class ClaimController {
             );
             notificationRepository.save(welcome);
             notificationRepository.save(desk);
-            list = notificationRepository.findAllByOrderByCreatedAtDesc();
+            list = (userId != null && !userId.isBlank())
+                    ? notificationRepository.findByUserIdOrGlobalOrderByCreatedAtDesc(userId.trim())
+                    : notificationRepository.findGlobalByOrderByCreatedAtDesc();
         }
         return ResponseEntity.ok(list);
     }
 
+    @PostMapping("/notifications/{id}/read")
+    public ResponseEntity<Map<String, Object>> markNotificationRead(
+            @PathVariable String id,
+            @org.springframework.web.bind.annotation.RequestParam(required = false) String userId) {
+        Notification notification = notificationRepository.findById(id).orElse(null);
+        if (notification == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Notification not found.");
+        }
+        if (notification.getUserId() != null && !notification.getUserId().equals(userId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Notification not found.");
+        }
+        notification.setRead(true);
+        notificationRepository.save(notification);
+        return ResponseEntity.ok(Map.of("message", "Notification marked as read.", "notification", notification));
+    }
+
     @PostMapping("/notifications/read")
-    public ResponseEntity<Map<String, Object>> markAllNotificationsRead() {
-        List<Notification> list = notificationRepository.findAll();
+    public ResponseEntity<Map<String, Object>> markAllNotificationsRead(
+            @org.springframework.web.bind.annotation.RequestParam(required = false) String userId) {
+        List<Notification> list = userId != null && !userId.isBlank()
+                ? notificationRepository.findByUserIdOrGlobalOrderByCreatedAtDesc(userId.trim())
+                : notificationRepository.findGlobalByOrderByCreatedAtDesc();
         for (Notification n : list) {
             n.setRead(true);
         }

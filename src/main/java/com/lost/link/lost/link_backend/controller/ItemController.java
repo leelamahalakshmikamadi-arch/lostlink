@@ -22,6 +22,9 @@ import com.lost.link.lost.link_backend.service.ImageFeatureService;
 import com.lost.link.lost.link_backend.service.ImageStorageService;
 import com.lost.link.lost.link_backend.service.ItemService;
 import com.lost.link.lost.link_backend.service.GeminiImageMatchingService;
+import com.lost.link.lost.link_backend.service.NotificationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @RestController
 @RequestMapping("/api/items")
@@ -33,20 +36,25 @@ import com.lost.link.lost.link_backend.service.GeminiImageMatchingService;
 }, allowedHeaders = "*", methods = { RequestMethod.GET, RequestMethod.POST, RequestMethod.OPTIONS })
 public class ItemController {
 
+    private static final Logger logger = LoggerFactory.getLogger(ItemController.class);
+
     private final ItemService itemService;
     private final ImageStorageService imageStorageService;
     private final ImageFeatureService imageFeatureService;
     private final GridFsTemplate gridFsTemplate;
     private final GeminiImageMatchingService geminiImageMatchingService;
+    private final NotificationService notificationService;
 
     public ItemController(ItemService itemService, ImageStorageService imageStorageService,
             ImageFeatureService imageFeatureService, GridFsTemplate gridFsTemplate,
-            GeminiImageMatchingService geminiImageMatchingService) {
+            GeminiImageMatchingService geminiImageMatchingService,
+            NotificationService notificationService) {
         this.itemService = itemService;
         this.imageStorageService = imageStorageService;
         this.imageFeatureService = imageFeatureService;
         this.gridFsTemplate = gridFsTemplate;
         this.geminiImageMatchingService = geminiImageMatchingService;
+        this.notificationService = notificationService;
     }
 
     @PostMapping("/lost")
@@ -81,7 +89,9 @@ public class ItemController {
     public ResponseEntity<Map<String, Object>> matchLostItem(
             @RequestPart("image") MultipartFile image,
             @RequestParam(defaultValue = "lost") String itemType,
-            @RequestParam(defaultValue = "0.65") double minSimilarity) {
+            @RequestParam(defaultValue = "0.65") double minSimilarity,
+            @RequestParam(required = false) String userId,
+            @RequestParam(required = false) String userEmail) {
         if (!"lost".equalsIgnoreCase(itemType) && !"found".equalsIgnoreCase(itemType)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "itemType must be lost or found");
         }
@@ -89,6 +99,38 @@ public class ItemController {
             ? itemService.getLostItems()
             : itemService.getFoundItems();
         List<Map<String, Object>> matches = geminiImageMatchingService.findMatches(image, candidates, minSimilarity);
+
+        // Keep notification persistence outside the matching result path.
+        for (Map<String, Object> match : matches) {
+            try {
+                Double similarity = match.get("similarity") instanceof Number
+                        ? ((Number) match.get("similarity")).doubleValue() : null;
+                Double similarityPercentage = match.get("similarityPercentage") instanceof Number
+                        ? ((Number) match.get("similarityPercentage")).doubleValue() : null;
+
+            boolean isHundredPercent = (similarityPercentage != null && similarityPercentage >= 100.0)
+                || (similarity != null && similarity >= 1.0);
+
+                if (isHundredPercent) {
+                    String candidateId = null;
+                    Object itemObj = match.get("item");
+                    if (itemObj instanceof Map<?, ?> itemMap && itemMap.get("id") != null) {
+                        candidateId = itemMap.get("id").toString();
+                    }
+                    final String targetCandidateId = candidateId;
+                    Item candidateItem = candidates.stream()
+                            .filter(c -> c.getId() != null && c.getId().equals(targetCandidateId))
+                            .findFirst()
+                            .orElseGet(() -> targetCandidateId != null ? itemService.getItem(targetCandidateId) : null);
+
+                    notificationService.handleMatchNotification(candidateItem, itemType, userId, userEmail, 100.0);
+                }
+            } catch (Exception ex) {
+                // Notification failures must not affect AI results or other match notifications.
+                logger.error("Failed to process match notification: {}", ex.getMessage(), ex);
+            }
+        }
+
         return ResponseEntity.ok(Map.of("matches", matches));
     }
 

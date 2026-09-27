@@ -6,10 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -97,12 +100,34 @@ class ClaimControllerTest {
     @Test
     void getNotificationsReturnsList() {
         Notification n = new Notification("Test Alert", "Sample item alert", "SYSTEM", "item-1");
-        when(notificationRepository.findAllByOrderByCreatedAtDesc()).thenReturn(List.of(n));
+        when(notificationRepository.findGlobalByOrderByCreatedAtDesc()).thenReturn(List.of(n));
 
-        ResponseEntity<List<Notification>> response = claimController.getNotifications();
+        ResponseEntity<List<Notification>> response = claimController.getNotifications(null);
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(1, response.getBody().size());
         assertEquals("Test Alert", response.getBody().get(0).getTitle());
+    }
+
+    @Test
+    void getNotificationsUsesTheRequestedUserScope() {
+        Notification n = new Notification("Match", "A match was found", "MATCH", "item-2", "owner-42", 100.0);
+        when(notificationRepository.findByUserIdOrGlobalOrderByCreatedAtDesc("owner-42")).thenReturn(List.of(n));
+
+        ResponseEntity<List<Notification>> response = claimController.getNotifications("owner-42");
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals("owner-42", response.getBody().get(0).getUserId());
+    }
+
+    @Test
+    void userCannotMarkAnotherUsersMatchNotificationAsRead() {
+        Notification notification = new Notification("Match", "A match was found", "MATCH", "item-2", "owner-42", 100.0);
+        notification.setId("notification-1");
+        when(notificationRepository.findById("notification-1")).thenReturn(Optional.of(notification));
+
+        assertThrows(ResponseStatusException.class,
+                () -> claimController.markNotificationRead("notification-1", "another-user"));
+        verify(notificationRepository, never()).save(any(Notification.class));
     }
 }
 
